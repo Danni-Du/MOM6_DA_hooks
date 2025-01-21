@@ -16,10 +16,11 @@ program seg
   real(8), dimension(76) :: z_i
   integer :: zl_index_mld, zl_index10m, zl_index_3mld, right_index
   real(8), dimension(:), allocatable :: PRHO_profile
-  real(8) :: value_for_control_PRHO, value_for_control_depth, reference_depth, PRHO_change, PRHO_mld, PRHO_10m,value_for_control_oceanzvars, dummy_var 
+  real(8) :: value_for_control_PRHO, value_for_control_depth, reference_depth, PRHO_change, PRHO_mld, PRHO_10m,value_for_control_oceanzvars, dummy_var
   real(8) :: mld_depth
   real(8), dimension(:), allocatable :: zl_to_sigma, zi_to_sigma
-  real(8), dimension(15) :: target_sigmas, thetao_zgrad_sigma, so_zgrad_sigma, PRHO_zgrad_sigma, div_sigma
+  real(8), dimension(15) :: target_sigmas, thetao_zgrad_sigma, so_zgrad_sigma, PRHO_zgrad_sigma, div_sigma, output_DT_sigmas
+  real(8), dimension(16) :: output_flux_sigmas
   real(8), dimension(:), allocatable :: thetao_zgrad_profile, so_zgrad_profile, div_profile, PRHO_zgrad_profile
   character(len=255)  :: danni_ANN_name
   real(8), dimension(16,51)  :: l1_weight
@@ -27,10 +28,12 @@ program seg
   real(8), dimension(16) :: l1_bias, l2_bias, l3_bias, l1_output, l2_output, l3_output
   real(8) :: ReLU_zero
   real(8), dimension(51) :: ANN_input
-  
+  real(8), dimension(:), allocatable :: output_DT_at_zl, output_flux_at_zi
+
   ReLU_zero = 0
   target_sigmas = (/0.1,0.3,0.5,0.7,0.9,1.1,1.3,1.5,1.7,1.9,2.1,2.3,2.5,2.7,2.9/)
   !print *, target_sigmas
+  output_flux_sigmas = (/0.0, 0.2, 0.4, 0.6, 0.8, 1.0, 1.2, 1.4, 1.6, 1.8, 2.0, 2.2, 2.4, 2.6, 2.8, 3.0/)
 
   PRHO_change = 0.03
   reference_depth = 10
@@ -232,7 +235,7 @@ program seg
 
   ! load the NN weights and biases
   ! subroutine(input,DA tendency)
-  danni_ANN_name = '/scratch/cimes/dd7201/pp_DA_increments/danni_data_20250120/argo_only_clean/networks/danni_ANN_weights.nc'
+  danni_ANN_name = '/scratch/cimes/dd7201/pp_DA_increments/danni_data_20250120/argo_only_clean/networks/danni_ANN_weights_2006_2010.nc'
   call read_ANN_file(danni_ANN_name, l1_weight, l2_weight, l3_weight, l1_bias, l2_bias, l3_bias)
    
   ANN_input(1:15) = thetao_zgrad_sigma*100
@@ -250,7 +253,40 @@ program seg
   l3_output = matmul(l3_weight, l2_output) + l3_bias
   !print *, l3_output
   ! l3_output is the predicted flux
-  print *, (l3_output(1:15)-l3_output(2:16))/(0.2*mld_depth)
+  output_DT_sigmas =  (l3_output(1:15)-l3_output(2:16))/(0.2*mld_depth)
+  !print *, zi_to_sigma
+  !print *, zl_to_sigma
+  allocate(output_flux_at_zi(zl_index_3mld+1))
+  output_flux_at_zi(1) = l3_output(1)
+  do zz = 1, zl_index_3mld
+    call find_right_index(output_flux_sigmas, zi_to_sigma(zz),value_for_control_depth, right_index)
+    if (right_index == 0) then
+      output_flux_at_zi(zz+1) = 0.0
+    else
+      call interpolate(output_flux_sigmas(right_index-1),output_flux_sigmas(right_index),l3_output(right_index-1),l3_output(right_index),zi_to_sigma(zz),output_flux_at_zi(zz+1))
+
+    end if
+  end do
+
+  allocate(output_DT_at_zl(zl_index_3mld))
+  do zz = 1, zl_index_3mld
+    call find_right_index(target_sigmas, zl_to_sigma(zz),value_for_control_depth, right_index)
+    if (right_index == 0) then
+      output_DT_at_zl(zz) = 0.0
+    else if (right_index == 1) then
+      output_DT_at_zl(zz) = output_DT_sigmas(1)
+    else
+      call interpolate(target_sigmas(right_index-1),target_sigmas(right_index),output_DT_sigmas(right_index-1),output_DT_sigmas(right_index),zl_to_sigma(zz),output_DT_at_zl(zz))
+    end if
+  end do
+  !print *, "l3_output"
+  !print *, l3_output
+  !print *, 'zi_to_sigma'
+  !print *, zi_to_sigma
+  !print *, 'output_flux_at_zi'
+  !print *, output_flux_at_zi
+  !print *, output_DT_at_zl
+  
 contains
   Subroutine read_ANN_file(filename, l1_weight, l2_weight, l3_weight, l1_bias, l2_bias, l3_bias)
     use netcdf
